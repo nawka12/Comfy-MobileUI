@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'screens/home_screen.dart';
 import 'services/comfyui_service.dart';
+import 'services/tams_service.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -18,7 +19,10 @@ class ComfyMobileApp extends StatelessWidget {
       theme: _buildTheme(Brightness.light),
       darkTheme: _buildTheme(Brightness.dark),
       themeMode: ThemeMode.system,
-      home: HomeScreen(service: ComfyUIService()),
+      home: HomeScreen(
+        service: ComfyUIService(),
+        tamsService: TamsService(),
+      ),
     );
   }
 

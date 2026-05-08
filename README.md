@@ -11,7 +11,16 @@ A Flutter-based mobile/desktop frontend for [ComfyUI](https://github.com/comfyan
 | **Generate** | Prompt input, model/LoRA selection, parameter tuning, preset switcher, image generation |
 | **Workflows** | Import and manage custom ComfyUI API-format workflows |
 | **Gallery** | Browse generated images with full metadata, share, move to hidden library |
-| **Settings** | Server config, config export/import as `.json`, presets, privacy controls |
+| **Settings** | Backend mode, server config, config export/import as `.json`, presets, privacy controls |
+
+Focused inputs unfocus automatically when you change tabs (swipe or tap), so the keyboard never lingers across screens.
+
+### Backends
+
+Two backends, switchable from **Settings → Backend**:
+
+- **Local** — talks to a self-hosted ComfyUI instance over HTTP + WebSocket. Full feature set (any architecture, custom workflows, LoRAs, live progress).
+- **TAMS Cloud** — TensorArt's hosted workflow API. Bearer-token auth, job-poll based, locked to the SDXL profile.
 
 ### Architecture Profiles
 
@@ -51,6 +60,7 @@ Each profile declares its own loader nodes, text encoder, latent source, and any
 - Images saved locally with full generation metadata
 - **PNG metadata embedded**: workflow JSON is written into the saved PNG and can be re-read later
 - Grid view with tap-to-expand fullscreen, share, delete, and "move to hidden library"
+- **Swipe** left/right in the fullscreen viewer to step through neighboring images
 - Metadata chips: model, architecture, steps, CFG, sampler, seed, prompt preview
 
 ### Privacy
@@ -92,11 +102,12 @@ fvm flutter pub get
 flutter run
 ```
 
-1. Launch the app — it defaults to `http://localhost:8188`
-2. Open **Settings → Server** to point at your ComfyUI instance
-3. The Generate tab auto-detects the architecture from the selected model
-4. Enter a prompt, adjust parameters (or load a preset / custom workflow), tap **Generate**
-5. View results in the **Gallery** tab — long-press for actions
+1. Launch the app — it defaults to Local backend at `http://localhost:8188`
+2. Open **Settings → Backend** to pick **Local** (ComfyUI) or **TAMS Cloud** (TensorArt); for TAMS, paste your bearer token under **API Token**
+3. Open **Settings → Server** to point at your ComfyUI instance (Local mode only)
+4. The Generate tab auto-detects the architecture from the selected model (TAMS is locked to SDXL)
+5. Enter a prompt, adjust parameters (or load a preset / custom workflow), tap **Generate**
+6. View results in the **Gallery** tab — tap to expand, swipe to flip between images, long-press for actions
 
 ### Building for Release
 
@@ -118,6 +129,7 @@ lib/
 ├── main.dart                            # App entry, Material 3 theme (light/dark/system)
 ├── models/
 │   ├── architecture_profile.dart        # Profile definitions + detection (Standard, SDXL, Anima, Flux, SD3)
+│   ├── backend_mode.dart                # Local vs. TAMS Cloud selector
 │   ├── config_preset.dart               # Named preset (params + server URL)
 │   ├── dynamic_workflow.dart            # Parsed custom workflow w/ editable inputs
 │   ├── generation_params.dart           # Prompt, dims, sampler, profile-specific extras, LoRA list
@@ -134,6 +146,7 @@ lib/
 │   └── settings_screen.dart             # Server, config, presets, privacy, about
 ├── services/
 │   ├── comfyui_service.dart             # HTTP + WebSocket client, /object_info registry
+│   ├── tams_service.dart                # TensorArt cloud client (bearer auth, job polling)
 │   ├── config_service.dart              # SharedPreferences, presets, hidden-library password hash
 │   ├── gallery_service.dart             # Local file storage, main + hidden indices, share to OS
 │   ├── workflow_builder.dart            # Builds API-format workflow from profile + params

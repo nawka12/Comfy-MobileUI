@@ -2,10 +2,12 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../models/backend_mode.dart';
 import '../services/comfyui_service.dart';
 import '../services/config_service.dart';
 import '../services/gallery_service.dart';
 import '../services/secure_window_service.dart';
+import '../services/tams_service.dart';
 import '../services/workflow_builder.dart';
 import '../models/architecture_profile.dart';
 import '../models/config_preset.dart';
@@ -19,8 +21,9 @@ import 'workflows_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   final ComfyUIService service;
+  final TamsService tamsService;
 
-  const HomeScreen({super.key, required this.service});
+  const HomeScreen({super.key, required this.service, required this.tamsService});
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -45,12 +48,12 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     return ChangeNotifierProvider(
-      create: (_) => AppState(widget.service),
+      create: (_) => AppState(widget.service, widget.tamsService),
       child: _AppStateInitializer(
         child: Consumer<AppState>(
           builder: (context, state, _) {
             final screens = [
-              GenerateScreen(service: widget.service),
+              GenerateScreen(service: widget.service, tamsService: widget.tamsService),
               const WorkflowsScreen(),
               GalleryScreen(galleryService: state.galleryService),
               const SettingsScreen(),
@@ -59,12 +62,16 @@ class _HomeScreenState extends State<HomeScreen> {
               body: PageView(
                 controller: _pageCtrl,
                 physics: const PageScrollPhysics(),
-                onPageChanged: (i) => setState(() => _currentIndex = i),
+                onPageChanged: (i) {
+                  FocusManager.instance.primaryFocus?.unfocus();
+                  setState(() => _currentIndex = i);
+                },
                 children: screens,
               ),
               bottomNavigationBar: NavigationBar(
                 selectedIndex: _currentIndex,
                 onDestinationSelected: (i) {
+                  FocusManager.instance.primaryFocus?.unfocus();
                   _pageCtrl.animateToPage(
                     i,
                     duration: const Duration(milliseconds: 250),
@@ -166,6 +173,7 @@ class _AppStateInitializerState extends State<_AppStateInitializer> {
 
 class AppState extends ChangeNotifier {
   final ComfyUIService comfyService;
+  final TamsService tamsService;
   final ConfigService configService;
   final GalleryService galleryService;
   final WorkflowBuilder workflowBuilder;
@@ -180,13 +188,14 @@ class AppState extends ChangeNotifier {
   List<String> availableVaeModels = [];
   List<String> availableLoras = [];
   String status = 'Disconnected';
+  BackendMode backendMode = BackendMode.local;
 
   List<SavedWorkflow> workflows = [];
   String? activeWorkflowId;
   DynamicWorkflow? _activeWorkflow;
   bool customMode = false;
 
-  AppState(this.comfyService)
+  AppState(this.comfyService, this.tamsService)
       : configService = ConfigService(),
         galleryService = GalleryService(),
         workflowBuilder = WorkflowBuilder(comfyService.registry),
@@ -202,6 +211,9 @@ class AppState extends ChangeNotifier {
 
   DynamicWorkflow? get activeWorkflow => _activeWorkflow;
 
+  String get currentBackendUrl =>
+      backendMode == BackendMode.tams ? tamsService.baseUrl : comfyService.baseUrl;
+
   Future<void> init() async {
     await galleryService.init();
     final savedParams = await configService.loadParams();
@@ -209,6 +221,9 @@ class AppState extends ChangeNotifier {
     autoSave = await configService.loadAutoSave();
     secureWindow = await configService.loadSecureWindow();
     await SecureWindowService.setSecure(secureWindow);
+    backendMode = await configService.loadBackendMode();
+    final tamsToken = await configService.loadTamsApiToken();
+    final tamsUrl = await configService.loadTamsBaseUrl();
     workflows = await configService.loadWorkflows();
     activeWorkflowId = await configService.loadActiveWorkflowId();
     if (activeWorkflowId != null &&
@@ -220,7 +235,12 @@ class AppState extends ChangeNotifier {
       await configService.saveActiveWorkflowId(activeWorkflowId);
     }
     params = savedParams;
+    if (backendMode == BackendMode.tams && params.profileId != 'sdxl') {
+      params.profileId = 'sdxl';
+    }
     comfyService.updateBaseUrl(savedUrl);
+    tamsService.setToken(tamsToken);
+    tamsService.updateBaseUrl(tamsUrl);
     _rebuildActiveWorkflow();
     if (_activeWorkflow != null) customMode = true;
     notifyListeners();
@@ -329,15 +349,33 @@ class AppState extends ChangeNotifier {
 
   void notifyActiveWorkflowChanged() => notifyListeners();
 
+  Future<void> setBackendMode(BackendMode mode) async {
+    if (backendMode == mode) return;
+    backendMode = mode;
+    if (mode == BackendMode.tams && params.profileId != 'sdxl') {
+      params.profileId = 'sdxl';
+      _initExtrasForProfile();
+    }
+    await configService.saveBackendMode(mode);
+    notifyListeners();
+    await checkConnection();
+  }
+
   Future<void> checkConnection() async {
     status = 'Connecting...';
     notifyListeners();
-    connected = await comfyService.testConnection();
-    status = connected ? 'Connected' : 'Disconnected';
-    notifyListeners();
-    if (connected) {
-      await _loadNodeInfo();
+    if (backendMode == BackendMode.tams) {
+      comfyService.registry.registerKnownTypes();
+      connected = await tamsService.testConnection();
+      status = connected ? 'TAMS Connected' : 'Disconnected';
+    } else {
+      connected = await comfyService.testConnection();
+      status = connected ? 'Connected' : 'Disconnected';
+      if (connected) {
+        await _loadNodeInfo();
+      }
     }
+    notifyListeners();
   }
 
   Future<void> _loadNodeInfo() async {
@@ -429,21 +467,25 @@ class AppState extends ChangeNotifier {
   Future<List<ConfigPreset>> loadPresets() => configService.loadPresets();
 
   Future<ConfigPreset> savePreset(String name) =>
-      configService.savePreset(name, params, comfyService.baseUrl);
+      configService.savePreset(name, params, currentBackendUrl);
 
   Future<void> deletePreset(String id) => configService.deletePreset(id);
 
   Future<void> renamePreset(String id, String name) =>
       configService.renamePreset(id, name);
 
-  Future<void> applyPreset(ConfigPreset preset) {
+  Future<void> applyPreset(ConfigPreset preset) async {
     params = preset.params.copy();
-    if (preset.serverUrl.isNotEmpty) {
-      comfyService.updateBaseUrl(preset.serverUrl);
-    }
     _initExtrasForProfile();
     notifyListeners();
-    return configService.saveServerUrl(preset.serverUrl);
+    if (preset.serverUrl.isEmpty) return;
+    if (backendMode == BackendMode.tams) {
+      tamsService.updateBaseUrl(preset.serverUrl);
+      await configService.saveTamsBaseUrl(preset.serverUrl);
+    } else {
+      comfyService.updateBaseUrl(preset.serverUrl);
+      await configService.saveServerUrl(preset.serverUrl);
+    }
   }
 
   void _initExtrasForProfile() {
@@ -480,6 +522,7 @@ class AppState extends ChangeNotifier {
   @override
   void dispose() {
     comfyService.dispose();
+    tamsService.dispose();
     super.dispose();
   }
 }

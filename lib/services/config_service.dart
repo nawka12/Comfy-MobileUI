@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:math';
 import 'package:crypto/crypto.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../models/backend_mode.dart';
 import '../models/generation_params.dart';
 import '../models/config_preset.dart';
 import '../models/saved_workflow.dart';
@@ -17,6 +18,9 @@ class ConfigService {
   static const _secureWindowKey = 'secure_window_enabled';
   static const _hiddenPwdHashKey = 'hidden_library_pwd_hash';
   static const _hiddenPwdSaltKey = 'hidden_library_pwd_salt';
+  static const _backendModeKey = 'backend_mode';
+  static const _tamsApiTokenKey = 'tams_api_token';
+  static const _tamsBaseUrlKey = 'tams_base_url';
   // Legacy single-workflow keys, migrated on first load.
   static const _legacyWorkflowKey = 'custom_workflow_json';
   static const _legacyWorkflowValuesKey = 'custom_workflow_values';
@@ -188,6 +192,44 @@ class ConfigService {
   Future<String> exportPresetJson(ConfigPreset preset) {
     const encoder = JsonEncoder.withIndent('  ');
     return Future.value(encoder.convert(preset.toJson()));
+  }
+
+  // --- Backend mode & TAMS ---
+
+  Future<BackendMode> loadBackendMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_backendModeKey);
+    if (raw == 'tams') return BackendMode.tams;
+    return BackendMode.local;
+  }
+
+  Future<void> saveBackendMode(BackendMode mode) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_backendModeKey, mode == BackendMode.local ? 'local' : 'tams');
+  }
+
+  Future<String?> loadTamsApiToken() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_tamsApiTokenKey);
+  }
+
+  Future<void> saveTamsApiToken(String? token) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (token == null || token.isEmpty) {
+      await prefs.remove(_tamsApiTokenKey);
+    } else {
+      await prefs.setString(_tamsApiTokenKey, token);
+    }
+  }
+
+  Future<String> loadTamsBaseUrl() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_tamsBaseUrlKey) ?? 'https://ap-east-1.tensorart.cloud/v1';
+  }
+
+  Future<void> saveTamsBaseUrl(String url) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_tamsBaseUrlKey, url);
   }
 
   // --- Privacy ---

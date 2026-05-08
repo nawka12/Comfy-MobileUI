@@ -1,5 +1,27 @@
 import 'dart:convert';
 
+const defaultSamplers = [
+  'euler', 'euler_cfg_pp', 'euler_ancestral', 'euler_ancestral_cfg_pp',
+  'heun', 'heunpp2', 'exp_heun_2_x0', 'exp_heun_2_x0_sde',
+  'dpm_2', 'dpm_2_ancestral', 'lms', 'dpm_fast', 'dpm_adaptive',
+  'dpmpp_2s_ancestral', 'dpmpp_2s_ancestral_cfg_pp',
+  'dpmpp_sde', 'dpmpp_sde_gpu',
+  'dpmpp_2m', 'dpmpp_2m_cfg_pp', 'dpmpp_2m_sde', 'dpmpp_2m_sde_gpu',
+  'dpmpp_2m_sde_heun', 'dpmpp_2m_sde_heun_gpu',
+  'dpmpp_3m_sde', 'dpmpp_3m_sde_gpu',
+  'ddpm', 'lcm', 'ipndm', 'ipndm_v', 'deis',
+  'res_multistep', 'res_multistep_cfg_pp',
+  'res_multistep_ancestral', 'res_multistep_ancestral_cfg_pp',
+  'gradient_estimation', 'gradient_estimation_cfg_pp',
+  'er_sde', 'seeds_2', 'seeds_3', 'sa_solver', 'sa_solver_pece',
+  'ddim', 'uni_pc', 'uni_pc_bh2',
+];
+
+const defaultSchedulers = [
+  'simple', 'sgm_uniform', 'karras', 'exponential', 'ddim_uniform',
+  'beta', 'normal', 'linear_quadratic', 'kl_optimal',
+];
+
 class NodeInputDef {
   final String name;
   final String type;
@@ -46,6 +68,9 @@ class NodeInputDef {
       type = 'ENUM';
     } else if (typeOrDef is String) {
       type = typeOrDef;
+      if (type == 'COMBO' && meta['options'] is List) {
+        options = (meta['options'] as List).cast<String>();
+      }
     } else {
       type = typeOrDef.toString();
     }
@@ -184,5 +209,116 @@ class NodeRegistry {
       if (input.options != null && input.options!.isNotEmpty) return input.options!;
     }
     return [];
+  }
+
+  /// Register minimal definitions for common node types.
+  /// Used when the registry is empty (e.g. TAMS mode) so [WorkflowBuilder]
+  /// can still determine input names and connection types.
+  void registerKnownTypes() {
+    if (_types.isNotEmpty) return;
+
+    void _type(String name, List<List<dynamic>> required) {
+      _types[name] = NodeType(
+        name: name,
+        displayName: name,
+        category: '',
+        pythonModule: '',
+        outputNames: [],
+        requiredInputs: required
+            .map((spec) => NodeInputDef.fromApi(spec[0] as String, spec[1] as List<dynamic>))
+            .toList(),
+        optionalInputs: [],
+        outputNode: false,
+      );
+    }
+
+    _type('CheckpointLoaderSimple', [
+      ['ckpt_name', ['COMBO', {'options': ['placeholder']}]],
+    ]);
+    _type('UNETLoader', [
+      ['unet_name', ['COMBO', {'options': ['placeholder']}]],
+      ['weight_dtype', ['COMBO', {'options': ['default']}]],
+    ]);
+    _type('CLIPLoader', [
+      ['clip_name', ['COMBO', {'options': ['placeholder']}]],
+      ['type', ['COMBO', {'options': ['stable_diffusion', 'flux']}]],
+    ]);
+    _type('VAELoader', [
+      ['vae_name', ['COMBO', {'options': ['placeholder']}]],
+    ]);
+    _type('CLIPTextEncode', [
+      ['text', ['STRING']],
+      ['clip', ['CLIP']],
+    ]);
+    _type('CLIPTextEncodeSDXL', [
+      ['width', ['INT']],
+      ['height', ['INT']],
+      ['crop_w', ['INT']],
+      ['crop_h', ['INT']],
+      ['target_width', ['INT']],
+      ['target_height', ['INT']],
+      ['text_g', ['STRING']],
+      ['clip', ['CLIP']],
+      ['text_l', ['STRING']],
+    ]);
+    _type('CLIPTextEncodeFlux', [
+      ['clip_l', ['CLIP']],
+      ['t5xxl', ['CLIP']],
+      ['guidance', ['FLOAT']],
+      ['text', ['STRING']],
+    ]);
+    _type('CLIPTextEncodeSD3', [
+      ['text', ['STRING']],
+      ['clip_l', ['CLIP']],
+      ['clip_g', ['CLIP']],
+      ['t5xxl', ['CLIP']],
+    ]);
+    _type('FluxGuidance', [
+      ['conditioning', ['CONDITIONING']],
+      ['guidance', ['FLOAT']],
+    ]);
+    _type('ModelSamplingSD3', [
+      ['model', ['MODEL']],
+      ['shift', ['FLOAT']],
+    ]);
+    _type('EmptyLatentImage', [
+      ['width', ['INT']],
+      ['height', ['INT']],
+      ['batch_size', ['INT']],
+    ]);
+    _type('EmptySD3LatentImage', [
+      ['width', ['INT']],
+      ['height', ['INT']],
+      ['batch_size', ['INT']],
+    ]);
+    _type('KSampler', [
+      ['seed', ['INT', {'default': 0}]],
+      ['steps', ['INT', {'default': 20}]],
+      ['cfg', ['FLOAT', {'default': 7.0}]],
+      ['sampler_name', ['COMBO', {'options': defaultSamplers}]],
+      ['scheduler', ['COMBO', {'options': defaultSchedulers}]],
+      ['denoise', ['FLOAT', {'default': 1.0}]],
+      ['model', ['MODEL']],
+      ['positive', ['CONDITIONING']],
+      ['negative', ['CONDITIONING']],
+      ['latent_image', ['LATENT']],
+    ]);
+    _type('VAEDecode', [
+      ['samples', ['LATENT']],
+      ['vae', ['VAE']],
+    ]);
+    _type('SaveImage', [
+      ['images', ['IMAGE']],
+      ['filename_prefix', ['STRING', {'default': 'ComfyMobile'}]],
+    ]);
+    _type('LoraLoader', [
+      ['lora_name', ['COMBO', {'options': ['placeholder']}]],
+      ['strength_model', ['FLOAT', {'default': 1.0}]],
+      ['strength_clip', ['FLOAT', {'default': 1.0}]],
+      ['model', ['MODEL']],
+      ['clip', ['CLIP']],
+    ]);
+
+    _loaded = true;
   }
 }

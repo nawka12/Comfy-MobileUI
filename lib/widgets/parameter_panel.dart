@@ -14,6 +14,7 @@ class ParameterPanel extends StatefulWidget {
   final VoidCallback? onPickModel;
   final VoidCallback? onPickClip;
   final VoidCallback? onPickVae;
+  final bool isTams;
 
   const ParameterPanel({
     super.key,
@@ -27,6 +28,7 @@ class ParameterPanel extends StatefulWidget {
     this.onPickModel,
     this.onPickClip,
     this.onPickVae,
+    this.isTams = false,
   });
 
   @override
@@ -173,7 +175,7 @@ class _ParameterPanelState extends State<ParameterPanel>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildProfileSelector(s, profile, theme),
+          if (!widget.isTams) _buildProfileSelector(s, profile, theme),
           _buildModelPicker(s, profile, theme),
           _buildSeedRow(s, theme),
           const SizedBox(height: 4),
@@ -875,14 +877,3 @@ class _SliderFieldState extends State<_SliderField> {
   }
 }
 
-const defaultSamplers = [
-  'euler', 'euler_cfg_pp', 'euler_ancestral', 'euler_ancestral_cfg_pp',
-  'heun', 'heunpp2', 'dpm_2', 'dpm_2_ancestral', 'dpm_fast',
-  'dpm_adaptive', 'dpmpp_2s_ancestral', 'dpmpp_2s_ancestral_cfg_pp',
-  'dpmpp_2m', 'dpmpp_2m_cfg_pp', 'dpmpp_2m_sde', 'dpmpp_3m_sde',
-  'lms', 'lcm', 'ddim', 'uni_pc', 'uni_pc_bh2',
-];
-
-const defaultSchedulers = [
-  'normal', 'karras', 'exponential', 'sgm_uniform', 'simple', 'ddim_uniform',
-];

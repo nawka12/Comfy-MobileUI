@@ -6,6 +6,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/architecture_profile.dart';
+import '../models/backend_mode.dart';
 import '../models/config_preset.dart';
 import '../models/workflow.dart';
 import 'home_screen.dart';
@@ -99,8 +100,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               .colorScheme
                               .onPrimaryContainer),
                     ),
-                    title: const Text('ComfyUI URL'),
-                    subtitle: Text(state.comfyService.baseUrl,
+                    title: Text(
+                        state.backendMode == BackendMode.tams ? 'TAMS URL' : 'ComfyUI URL'),
+                    subtitle: Text(state.currentBackendUrl,
                         style: const TextStyle(fontFamily: 'monospace')),
                     trailing: const Icon(Icons.edit),
                     onTap: () => _editServerUrl(state),
@@ -127,11 +129,68 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                     title: Text(
                         state.connected ? 'Connected' : 'Disconnected'),
-                    subtitle: Text(state.connected
-                        ? '${state.availableModels.length} models available'
-                        : 'Tap to reconnect'),
+                    subtitle: Text(state.backendMode == BackendMode.tams
+                        ? (state.connected ? 'TAMS API ready' : 'Tap to reconnect')
+                        : (state.connected
+                            ? '${state.availableModels.length} models available'
+                            : 'Tap to reconnect')),
                     onTap: () => state.checkConnection(),
                   ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              _buildCard(
+                children: [
+                  _buildSectionTitle(context, 'Backend', Icons.cloud_outlined),
+                  const SizedBox(height: 8),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: SegmentedButton<BackendMode>(
+                      segments: const [
+                        ButtonSegment(
+                          value: BackendMode.local,
+                          label: Text('Local'),
+                          icon: Icon(Icons.computer, size: 16),
+                        ),
+                        ButtonSegment(
+                          value: BackendMode.tams,
+                          label: Text('TAMS Cloud'),
+                          icon: Icon(Icons.cloud, size: 16),
+                        ),
+                      ],
+                      selected: {state.backendMode},
+                      onSelectionChanged: (s) async {
+                        final mode = s.first;
+                        await state.setBackendMode(mode);
+                      },
+                    ),
+                  ),
+                  if (state.backendMode == BackendMode.tams) ...[
+                    const SizedBox(height: 8),
+                    ListTile(
+                      leading: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Theme.of(context).colorScheme.tertiaryContainer,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Icon(Icons.key,
+                            size: 20,
+                            color: Theme.of(context).colorScheme.onTertiaryContainer),
+                      ),
+                      title: const Text('API Token'),
+                      subtitle: Text(
+                        state.tamsService.hasToken ? 'Token configured' : 'No token set',
+                        style: TextStyle(
+                          color: state.tamsService.hasToken
+                              ? null
+                              : Theme.of(context).colorScheme.error,
+                        ),
+                      ),
+                      trailing: const Icon(Icons.edit),
+                      onTap: () => _editTamsToken(state),
+                    ),
+                  ],
                 ],
               ),
               const SizedBox(height: 12),
@@ -434,16 +493,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   void _editServerUrl(AppState state) {
-    final controller = TextEditingController(text: state.comfyService.baseUrl);
+    final isTams = state.backendMode == BackendMode.tams;
+    final current = isTams ? state.tamsService.baseUrl : state.comfyService.baseUrl;
+    final controller = TextEditingController(text: current);
+    final label = isTams ? 'TAMS URL' : 'ComfyUI URL';
+    final hint = isTams
+        ? 'https://ap-east-1.tensorart.cloud/v1'
+        : 'http://192.168.1.100:8188';
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Server URL'),
         content: TextField(
           controller: controller,
-          decoration: const InputDecoration(
-            labelText: 'ComfyUI URL',
-            hintText: 'http://192.168.1.100:8188',
+          decoration: InputDecoration(
+            labelText: label,
+            hintText: hint,
           ),
           keyboardType: TextInputType.url,
           autofocus: true,
@@ -464,16 +529,84 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ).then((result) {
       controller.dispose();
       if (result != null && result.isNotEmpty) {
-        state.comfyService.updateBaseUrl(result);
-        state.configService.saveServerUrl(result);
+        if (isTams) {
+          state.tamsService.updateBaseUrl(result);
+          state.configService.saveTamsBaseUrl(result);
+        } else {
+          state.comfyService.updateBaseUrl(result);
+          state.configService.saveServerUrl(result);
+        }
         state.checkConnection();
       }
     });
   }
 
+  Future<void> _editTamsToken(AppState state) async {
+    final current = state.tamsService.baseUrl;
+    final tokenController = TextEditingController();
+    final urlController = TextEditingController(text: current);
+    final result = await showDialog<Map<String, String>>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('TAMS Configuration'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: tokenController,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: 'API Token',
+                hintText: 'Enter your TAMS Bearer token',
+              ),
+              autofocus: true,
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: urlController,
+              decoration: const InputDecoration(
+                labelText: 'Endpoint URL',
+                hintText: 'https://ap-east-1.tensorart.cloud/v1',
+              ),
+              keyboardType: TextInputType.url,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              minimumSize: const Size(96, 40),
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+            ),
+            onPressed: () => Navigator.pop(ctx, {
+              'token': tokenController.text,
+              'url': urlController.text,
+            }),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    tokenController.dispose();
+    urlController.dispose();
+    if (result != null && mounted) {
+      final token = result['token'] ?? '';
+      final url = result['url'] ?? state.tamsService.baseUrl;
+      state.tamsService.setToken(token.isNotEmpty ? token : null);
+      state.tamsService.updateBaseUrl(url);
+      await state.configService.saveTamsApiToken(token.isNotEmpty ? token : null);
+      await state.configService.saveTamsBaseUrl(url);
+      await state.checkConnection();
+    }
+  }
+
   Future<void> _exportConfig(AppState state) async {
     final config = AppConfig(
-      serverUrl: state.comfyService.baseUrl,
+      serverUrl: state.currentBackendUrl,
       params: state.params,
     );
     final saved = await _saveJsonFile(
@@ -500,9 +633,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
       );
       return;
     }
-    state.comfyService.updateBaseUrl(config.serverUrl);
+    if (state.backendMode == BackendMode.tams) {
+      state.tamsService.updateBaseUrl(config.serverUrl);
+      await state.configService.saveTamsBaseUrl(config.serverUrl);
+    } else {
+      state.comfyService.updateBaseUrl(config.serverUrl);
+      await state.configService.saveServerUrl(config.serverUrl);
+    }
     state.updateParams(config.params);
-    await state.configService.saveServerUrl(config.serverUrl);
     await state.configService.saveParams(config.params);
     await state.checkConnection();
     if (!mounted) return;

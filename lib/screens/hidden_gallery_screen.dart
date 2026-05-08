@@ -452,12 +452,14 @@ class _HiddenThumbnailState extends State<_HiddenThumbnail> {
   }
 
   void _view() {
-    if (_bytes == null) return;
+    final items = widget.galleryService.hiddenItems.toList(growable: false);
+    final initialIndex = items.indexWhere((i) => i.id == widget.item.id);
+    if (initialIndex < 0) return;
     Navigator.of(context).push(
       PageRouteBuilder(
         pageBuilder: (_, animation, _) => _HiddenImageViewer(
-          imageBytes: _bytes!,
-          item: widget.item,
+          items: items,
+          initialIndex: initialIndex,
           galleryService: widget.galleryService,
         ),
         transitionsBuilder: (_, animation, _, child) =>
@@ -496,16 +498,51 @@ class _HiddenThumbnailState extends State<_HiddenThumbnail> {
   }
 }
 
-class _HiddenImageViewer extends StatelessWidget {
-  final Uint8List imageBytes;
-  final GalleryItem item;
+class _HiddenImageViewer extends StatefulWidget {
+  final List<GalleryItem> items;
+  final int initialIndex;
   final GalleryService galleryService;
 
   const _HiddenImageViewer({
-    required this.imageBytes,
-    required this.item,
+    required this.items,
+    required this.initialIndex,
     required this.galleryService,
   });
+
+  @override
+  State<_HiddenImageViewer> createState() => _HiddenImageViewerState();
+}
+
+class _HiddenImageViewerState extends State<_HiddenImageViewer> {
+  late final PageController _pageController;
+  late int _currentIndex;
+  final Map<String, Uint8List?> _bytesCache = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = widget.initialIndex;
+    _pageController = PageController(initialPage: widget.initialIndex);
+    _loadAt(widget.initialIndex);
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  GalleryItem get _currentItem => widget.items[_currentIndex];
+
+  Future<void> _loadAt(int index) async {
+    if (index < 0 || index >= widget.items.length) return;
+    final item = widget.items[index];
+    if (_bytesCache.containsKey(item.id)) return;
+    _bytesCache[item.id] = null;
+    final bytes = await widget.galleryService.loadImageBytes(item.filePath);
+    if (!mounted) return;
+    setState(() => _bytesCache[item.id] = bytes);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -519,7 +556,7 @@ class _HiddenImageViewer extends StatelessWidget {
             icon: const Icon(Icons.unarchive_outlined),
             tooltip: 'Restore to gallery',
             onPressed: () async {
-              await galleryService.restoreFromHidden(item.id);
+              await widget.galleryService.restoreFromHidden(_currentItem.id);
               if (context.mounted) Navigator.of(context).pop();
             },
           ),
@@ -549,17 +586,39 @@ class _HiddenImageViewer extends StatelessWidget {
                 ),
               );
               if (confirm == true) {
-                await galleryService.deleteHiddenItem(item.id);
+                await widget.galleryService.deleteHiddenItem(_currentItem.id);
                 if (context.mounted) Navigator.of(context).pop();
               }
             },
           ),
         ],
       ),
-      body: InteractiveViewer(
-        minScale: 0.5,
-        maxScale: 4,
-        child: Center(child: Image.memory(imageBytes, fit: BoxFit.contain)),
+      body: PageView.builder(
+        controller: _pageController,
+        itemCount: widget.items.length,
+        onPageChanged: (i) {
+          setState(() => _currentIndex = i);
+          _loadAt(i - 1);
+          _loadAt(i + 1);
+        },
+        itemBuilder: (context, index) {
+          final item = widget.items[index];
+          final bytes = _bytesCache[item.id];
+          if (bytes == null) {
+            if (!_bytesCache.containsKey(item.id)) {
+              WidgetsBinding.instance
+                  .addPostFrameCallback((_) => _loadAt(index));
+            }
+            return const Center(
+              child: CircularProgressIndicator(color: Colors.white),
+            );
+          }
+          return InteractiveViewer(
+            minScale: 0.5,
+            maxScale: 4,
+            child: Center(child: Image.memory(bytes, fit: BoxFit.contain)),
+          );
+        },
       ),
     );
   }

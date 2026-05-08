@@ -1,3 +1,4 @@
+import 'package:uuid/uuid.dart';
 import '../models/architecture_profile.dart';
 import '../models/generation_params.dart';
 import '../models/nodes.dart';
@@ -333,5 +334,22 @@ class WorkflowBuilder {
       if (p.nodeKey == nodeKey && p.inputName == inputName) return p.key;
     }
     return null;
+  }
+
+  Map<String, dynamic> toTamsFormat(Map<String, dynamic> workflow) {
+    final params = <String, dynamic>{};
+    for (final entry in workflow.entries) {
+      final nodeId = entry.key;
+      final node = entry.value as Map<String, dynamic>;
+      params[nodeId] = {
+        'classType': node['class_type'],
+        'inputs': node['inputs'],
+        'properties': {},
+      };
+    }
+    return {
+      'requestId': const Uuid().v4(),
+      'params': params,
+    };
   }
 }

@@ -54,22 +54,20 @@ class _GalleryScreenState extends State<GalleryScreen> {
   }
 
   Future<void> _viewImage(GalleryItem item) async {
-    final bytes = await widget.galleryService.loadImageBytes(item.filePath);
-    if (bytes == null) return;
-    if (!mounted) return;
+    final items = widget.galleryService.items.toList(growable: false);
+    final initialIndex = items.indexWhere((i) => i.id == item.id);
+    if (initialIndex < 0) return;
     final appState = context.read<AppState>();
-    final metadata = widget.galleryService.readImageMetadataFromBytes(bytes);
     Navigator.of(context).push(
       PageRouteBuilder(
         pageBuilder: (context, animation, secondaryAnimation) => _ImageViewer(
-          imageBytes: bytes,
-          item: item,
-          metadata: metadata,
+          items: items,
+          initialIndex: initialIndex,
           galleryService: widget.galleryService,
           appState: appState,
-          onDelete: () {
+          onDelete: (toDelete) {
             Navigator.of(context).pop();
-            _deleteItem(item);
+            _deleteItem(toDelete);
           },
         ),
         transitionsBuilder: (context, animation, secondaryAnimation, child) {
@@ -311,17 +309,15 @@ class _GalleryThumbnailState extends State<_GalleryThumbnail> {
 }
 
 class _ImageViewer extends StatefulWidget {
-  final Uint8List imageBytes;
-  final GalleryItem item;
-  final Map<String, String> metadata;
-  final VoidCallback onDelete;
+  final List<GalleryItem> items;
+  final int initialIndex;
+  final void Function(GalleryItem item) onDelete;
   final GalleryService galleryService;
   final AppState appState;
 
   const _ImageViewer({
-    required this.imageBytes,
-    required this.item,
-    this.metadata = const {},
+    required this.items,
+    required this.initialIndex,
     required this.onDelete,
     required this.galleryService,
     required this.appState,
@@ -332,50 +328,84 @@ class _ImageViewer extends StatefulWidget {
 }
 
 class _ImageViewerState extends State<_ImageViewer> {
-  bool _hasEmbeddedConfig = false;
+  late final PageController _pageController;
+  late int _currentIndex;
+  final Map<String, Uint8List?> _bytesCache = {};
+  final Map<String, Map<String, String>> _metaCache = {};
 
   @override
   void initState() {
     super.initState();
-    _hasEmbeddedConfig =
-        widget.metadata.containsKey('comfy_mobile') ||
-        widget.metadata.containsKey('prompt');
+    _currentIndex = widget.initialIndex;
+    _pageController = PageController(initialPage: widget.initialIndex);
+    _loadAt(widget.initialIndex);
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  GalleryItem get _currentItem => widget.items[_currentIndex];
+
+  Future<void> _loadAt(int index) async {
+    if (index < 0 || index >= widget.items.length) return;
+    final item = widget.items[index];
+    if (_bytesCache.containsKey(item.id)) return;
+    _bytesCache[item.id] = null;
+    final bytes = await widget.galleryService.loadImageBytes(item.filePath);
+    if (!mounted) return;
+    setState(() {
+      _bytesCache[item.id] = bytes;
+      if (bytes != null) {
+        _metaCache[item.id] =
+            widget.galleryService.readImageMetadataFromBytes(bytes);
+      }
+    });
+  }
+
+  bool get _hasEmbeddedConfig {
+    final meta = _metaCache[_currentItem.id];
+    if (meta == null) return false;
+    return meta.containsKey('comfy_mobile') || meta.containsKey('prompt');
   }
 
   Future<void> _loadEmbeddedConfig() async {
-    final mobileJson = widget.metadata['comfy_mobile'];
-    if (mobileJson != null) {
-      try {
-        final data = jsonDecode(mobileJson) as Map<String, dynamic>;
-        final params = GenerationParams.fromJson(
-            data['params'] as Map<String, dynamic>? ?? {});
-        final serverUrl = data['serverUrl'] as String? ?? '';
-        if (mounted) {
-          widget.appState.updateParams(params);
-          if (serverUrl.isNotEmpty) {
-            widget.appState.comfyService.updateBaseUrl(serverUrl);
-          }
-          Navigator.of(context).pop();
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Config loaded from image')),
-          );
+    final meta = _metaCache[_currentItem.id];
+    final mobileJson = meta?['comfy_mobile'];
+    if (mobileJson == null) return;
+    try {
+      final data = jsonDecode(mobileJson) as Map<String, dynamic>;
+      final params = GenerationParams.fromJson(
+          data['params'] as Map<String, dynamic>? ?? {});
+      final serverUrl = data['serverUrl'] as String? ?? '';
+      if (mounted) {
+        widget.appState.updateParams(params);
+        if (serverUrl.isNotEmpty) {
+          widget.appState.comfyService.updateBaseUrl(serverUrl);
         }
-      } catch (_) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Failed to read config from image')),
-          );
-        }
+        Navigator.of(context).pop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Config loaded from image')),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to read config from image')),
+        );
       }
     }
   }
 
   Future<void> _saveToShared() async {
-    final path = await widget.galleryService.saveToSharedLocation(widget.item.id);
+    final path =
+        await widget.galleryService.saveToSharedLocation(_currentItem.id);
     if (!mounted) return;
     if (path != null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Saved')),
+        const SnackBar(content: Text('Saved')),
       );
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -386,7 +416,7 @@ class _ImageViewerState extends State<_ImageViewer> {
 
   @override
   Widget build(BuildContext context) {
-    final s = widget.item.params;
+    final s = _currentItem.params;
     final profile = ArchitectureProfile.byId(s.profileId);
     return Scaffold(
       backgroundColor: Colors.black,
@@ -407,7 +437,7 @@ class _ImageViewerState extends State<_ImageViewer> {
           ),
           IconButton(
             icon: const Icon(Icons.delete_outline),
-            onPressed: widget.onDelete,
+            onPressed: () => widget.onDelete(_currentItem),
             tooltip: 'Delete',
           ),
         ],
@@ -415,12 +445,34 @@ class _ImageViewerState extends State<_ImageViewer> {
       body: Column(
         children: [
           Expanded(
-            child: InteractiveViewer(
-              minScale: 0.5,
-              maxScale: 4,
-              child: Center(
-                child: Image.memory(widget.imageBytes, fit: BoxFit.contain),
-              ),
+            child: PageView.builder(
+              controller: _pageController,
+              itemCount: widget.items.length,
+              onPageChanged: (i) {
+                setState(() => _currentIndex = i);
+                _loadAt(i - 1);
+                _loadAt(i + 1);
+              },
+              itemBuilder: (context, index) {
+                final item = widget.items[index];
+                final bytes = _bytesCache[item.id];
+                if (bytes == null) {
+                  if (!_bytesCache.containsKey(item.id)) {
+                    WidgetsBinding.instance
+                        .addPostFrameCallback((_) => _loadAt(index));
+                  }
+                  return const Center(
+                    child: CircularProgressIndicator(color: Colors.white),
+                  );
+                }
+                return InteractiveViewer(
+                  minScale: 0.5,
+                  maxScale: 4,
+                  child: Center(
+                    child: Image.memory(bytes, fit: BoxFit.contain),
+                  ),
+                );
+              },
             ),
           ),
           Container(

@@ -146,14 +146,3 @@ class ComfyUIException implements Exception {
   String toString() => 'ComfyUIException: $message';
 }
 
-const defaultSamplers = [
-  'euler', 'euler_cfg_pp', 'euler_ancestral', 'euler_ancestral_cfg_pp',
-  'heun', 'heunpp2', 'dpm_2', 'dpm_2_ancestral', 'dpm_fast',
-  'dpm_adaptive', 'dpmpp_2s_ancestral', 'dpmpp_2s_ancestral_cfg_pp',
-  'dpmpp_2m', 'dpmpp_2m_cfg_pp', 'dpmpp_2m_sde', 'dpmpp_3m_sde',
-  'lms', 'lcm', 'ddim', 'uni_pc', 'uni_pc_bh2',
-];
-
-const defaultSchedulers = [
-  'normal', 'karras', 'exponential', 'sgm_uniform', 'simple', 'ddim_uniform',
-];

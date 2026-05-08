@@ -3,10 +3,13 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:uuid/uuid.dart';
 import '../models/architecture_profile.dart';
+import '../models/backend_mode.dart';
 import '../models/config_preset.dart';
 import '../services/android_foreground_service.dart';
 import '../services/comfyui_service.dart';
+import '../services/tams_service.dart' show TamsCreditsException, TamsException, TamsService;
 import '../widgets/dynamic_form.dart';
 import '../widgets/lora_panel.dart';
 import '../widgets/parameter_panel.dart';
@@ -15,8 +18,9 @@ import 'home_screen.dart';
 
 class GenerateScreen extends StatefulWidget {
   final ComfyUIService service;
+  final TamsService tamsService;
 
-  const GenerateScreen({super.key, required this.service});
+  const GenerateScreen({super.key, required this.service, required this.tamsService});
 
   @override
   State<GenerateScreen> createState() => _GenerateScreenState();
@@ -67,6 +71,7 @@ class _GenerateScreenState extends State<GenerateScreen>
     if (_generating) return;
     final state = _state;
     final useCustom = state.customMode && state.activeWorkflow != null;
+    final isTams = state.backendMode == BackendMode.tams;
 
     if (!useCustom) {
       if (state.params.positivePrompt.isEmpty) {
@@ -97,7 +102,6 @@ class _GenerateScreenState extends State<GenerateScreen>
         final profile = ArchitectureProfile.byId(state.params.profileId);
         workflow = state.workflowBuilder.build(profile, state.params);
       }
-      final promptId = await widget.service.queuePrompt(workflow);
 
       await AndroidForegroundService.start();
 
@@ -107,7 +111,14 @@ class _GenerateScreenState extends State<GenerateScreen>
         return;
       }
 
-      final imageData = await _pollForResult(promptId, _cancelToken!);
+      final Uint8List imageData;
+      if (isTams) {
+        final tamsBody = state.workflowBuilder.toTamsFormat(workflow);
+        imageData = await _tamsGenerate(tamsBody, _cancelToken!);
+      } else {
+        final promptId = await widget.service.queuePrompt(workflow);
+        imageData = await _pollForResult(promptId, _cancelToken!);
+      }
 
       if (!mounted || _cancelRequested) {
         _cancelRequested = false;
@@ -125,7 +136,7 @@ class _GenerateScreenState extends State<GenerateScreen>
       final workflowJson = const JsonEncoder.withIndent('  ').convert(workflow);
       final mobileConfig = const JsonEncoder.withIndent('  ').convert({
         'params': state.params.toJson(),
-        'serverUrl': widget.service.baseUrl,
+        'serverUrl': state.currentBackendUrl,
       });
       await state.galleryService.addImage(
         imageData, state.params.copy(),
@@ -136,6 +147,14 @@ class _GenerateScreenState extends State<GenerateScreen>
       if (!mounted) return;
       setState(() => _generating = false);
       _showSnack(e.message);
+    } on TamsCreditsException catch (e) {
+      if (!mounted) return;
+      setState(() => _generating = false);
+      _showCreditsError(e.message);
+    } on TamsException catch (e) {
+      if (!mounted) return;
+      setState(() => _generating = false);
+      _showSnack('TAMS error: ${e.message}');
     } catch (e) {
       if (!mounted) return;
       setState(() => _generating = false);
@@ -143,6 +162,38 @@ class _GenerateScreenState extends State<GenerateScreen>
     } finally {
       await AndroidForegroundService.stop();
     }
+  }
+
+  Future<Uint8List> _tamsGenerate(Map<String, dynamic> tamsBody, CancelToken cancelToken) async {
+    final resp = await widget.tamsService.createWorkflowJob(
+      const Uuid().v4(),
+      tamsBody['params'] as Map<String, dynamic>,
+    );
+    final jobId = resp.id;
+
+    const maxAttempts = 300;
+    const delay = Duration(seconds: 2);
+
+    for (int i = 0; i < maxAttempts; i++) {
+      if (cancelToken.isCancelled) throw ComfyUIException('Generation cancelled');
+      await Future.delayed(delay);
+      if (cancelToken.isCancelled || !mounted) {
+        throw ComfyUIException('Generation cancelled');
+      }
+
+      final status = await widget.tamsService.getJobStatus(jobId);
+      if (status.isComplete) {
+        if (status.isSuccess && status.successInfo != null) {
+          if (status.successInfo!.images.isNotEmpty) {
+            return widget.tamsService.downloadImage(status.successInfo!.images.first.url);
+          }
+          throw ComfyUIException('No images in TAMS response');
+        }
+        final reason = status.failedInfo?.reason ?? 'Unknown error';
+        throw ComfyUIException('TAMS job failed: $reason');
+      }
+    }
+    throw ComfyUIException('TAMS job timed out');
   }
 
   void _cancelGeneration() {
@@ -200,6 +251,67 @@ class _GenerateScreenState extends State<GenerateScreen>
     if (!mounted) return;
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(msg), duration: const Duration(seconds: 3)));
+  }
+
+  Future<void> _showCreditsError(String message) async {
+    if (!mounted) return;
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.monetization_on_outlined, size: 24),
+            SizedBox(width: 8),
+            Text('Insufficient Credits'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Your TAMS account does not have enough credits for this job.',
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Theme.of(ctx).colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Text(
+                '1 credit = \$0.003 USD',
+                style: TextStyle(fontFamily: 'monospace', fontSize: 13),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Visit the TAMS console to top up:',
+              style: Theme.of(ctx).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 4),
+            SelectableText(
+              'https://tams.tensor.art/app',
+              style: TextStyle(
+                color: Theme.of(ctx).colorScheme.primary,
+                fontFamily: 'monospace',
+                fontSize: 13,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          FilledButton(
+            style: FilledButton.styleFrom(
+              minimumSize: const Size(96, 40),
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+            ),
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -417,6 +529,7 @@ class _GenerateScreenState extends State<GenerateScreen>
               onPickVae: profile.vaeLoader != null
                   ? () => _showModelPicker(state, 'vae')
                   : null,
+              isTams: state.backendMode == BackendMode.tams,
             ),
             LoraPanel(
               params: state.params,
@@ -431,6 +544,7 @@ class _GenerateScreenState extends State<GenerateScreen>
   }
 
   Future<void> _showModelPicker(AppState state, String type) async {
+    final isTams = state.backendMode == BackendMode.tams;
     final List<String> models;
     final String current;
     final String title;
@@ -448,6 +562,66 @@ class _GenerateScreenState extends State<GenerateScreen>
         current = state.params.checkpoint;
         title = 'Select Model';
     }
+
+    if (isTams) {
+      final controller = TextEditingController(text: current);
+      final result = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text(title),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: controller,
+                decoration: const InputDecoration(
+                  labelText: 'Model ID',
+                  hintText: 'Enter model ID from tensor.art',
+                ),
+                autofocus: true,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'TAMS model IDs are found on tensor.art/model pages.\n'
+                'The numeric ID is in the URL.',
+                style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(ctx).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                minimumSize: const Size(96, 40),
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+              ),
+              onPressed: () => Navigator.pop(ctx, controller.text),
+              child: const Text('Set'),
+            ),
+          ],
+        ),
+      );
+      controller.dispose();
+      if (result != null && result.isNotEmpty && mounted) {
+        final updated = state.params.copy();
+        switch (type) {
+          case 'clip':
+            updated.clipModel = result;
+          case 'vae':
+            updated.vaeModel = result;
+          default:
+            updated.checkpoint = result;
+        }
+        state.updateParams(updated);
+      }
+      return;
+    }
+
     if (models.isEmpty) {
       _showSnack('No models available on server');
       return;
@@ -534,16 +708,24 @@ class _GenerateScreenState extends State<GenerateScreen>
   }
 
   Future<void> _showConnectionDialog(AppState state) async {
-    final controller = TextEditingController(text: widget.service.baseUrl);
+    final controller = TextEditingController(
+      text: state.backendMode == BackendMode.tams
+          ? widget.tamsService.baseUrl
+          : widget.service.baseUrl,
+    );
+    final label = state.backendMode == BackendMode.tams ? 'TAMS URL' : 'ComfyUI URL';
+    final hint = state.backendMode == BackendMode.tams
+        ? 'https://ap-east-1.tensorart.cloud/v1'
+        : 'http://192.168.1.100:8188';
     final result = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Server Connection'),
         content: TextField(
           controller: controller,
-          decoration: const InputDecoration(
-            labelText: 'ComfyUI URL',
-            hintText: 'http://192.168.1.100:8188',
+          decoration: InputDecoration(
+            labelText: label,
+            hintText: hint,
           ),
           keyboardType: TextInputType.url,
           autofocus: true,
@@ -563,8 +745,13 @@ class _GenerateScreenState extends State<GenerateScreen>
     );
     controller.dispose();
     if (result != null && result.isNotEmpty) {
-      widget.service.updateBaseUrl(result);
-      await state.configService.saveServerUrl(result);
+      if (state.backendMode == BackendMode.tams) {
+        widget.tamsService.updateBaseUrl(result);
+        await state.configService.saveTamsBaseUrl(result);
+      } else {
+        widget.service.updateBaseUrl(result);
+        await state.configService.saveServerUrl(result);
+      }
       await state.checkConnection();
     }
   }
