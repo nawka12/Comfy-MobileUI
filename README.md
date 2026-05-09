@@ -2,6 +2,8 @@
 
 A Flutter-based mobile/desktop frontend for [ComfyUI](https://github.com/comfyanonymous/ComfyUI). Connect to a running ComfyUI instance, generate images with multiple model architectures, import custom workflows, and manage a local gallery — all from a touch-friendly interface.
 
+> **⚠️ Early Development** — This project is actively being built. Features are incomplete, bugs are expected, and breaking changes may occur. Not yet suitable for production use.
+
 ## Features
 
 ### Four-Tab Interface
