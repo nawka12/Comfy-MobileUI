@@ -1,9 +1,7 @@
-import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/architecture_profile.dart';
-import '../models/generation_params.dart';
 import '../services/gallery_service.dart';
 import 'hidden_gallery_screen.dart';
 import 'home_screen.dart';
@@ -18,6 +16,119 @@ class GalleryScreen extends StatefulWidget {
 }
 
 class _GalleryScreenState extends State<GalleryScreen> {
+  bool _selectMode = false;
+  final Set<String> _selectedIds = {};
+  String _searchQuery = '';
+  String? _filterProfile;
+  bool _sortNewestFirst = true;
+  bool _showFilters = false;
+
+  List<GalleryItem> get _filteredItems {
+    var list = widget.galleryService.items.toList(growable: false);
+    if (_searchQuery.isNotEmpty) {
+      final q = _searchQuery.toLowerCase();
+      list = list.where((i) =>
+        i.params.positivePrompt.toLowerCase().contains(q) ||
+        i.params.checkpoint.toLowerCase().contains(q) ||
+        i.params.negativePrompt.toLowerCase().contains(q)
+      ).toList();
+    }
+    if (_filterProfile != null) {
+      list = list.where((i) => i.params.profileId == _filterProfile).toList();
+    }
+    if (_sortNewestFirst) {
+      list = list.reversed.toList();
+    }
+    return list;
+  }
+
+  Set<String> get _availableProfiles {
+    return widget.galleryService.items.map((i) => i.params.profileId).toSet();
+  }
+
+  void _toggleSelectMode() {
+    setState(() {
+      _selectMode = !_selectMode;
+      if (!_selectMode) _selectedIds.clear();
+    });
+  }
+
+  void _toggleItem(String id) {
+    setState(() {
+      if (_selectedIds.contains(id)) {
+        _selectedIds.remove(id);
+        if (_selectedIds.isEmpty) _selectMode = false;
+      } else {
+        _selectedIds.add(id);
+      }
+    });
+  }
+
+  void _enterSelectMode(String id) {
+    setState(() {
+      _selectMode = true;
+      _selectedIds.add(id);
+    });
+  }
+
+  Future<void> _batchDelete() async {
+    if (_selectedIds.isEmpty) return;
+    final count = _selectedIds.length;
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Selected'),
+        content: Text('Delete $count selected image${
+          count == 1 ? '' : 's'}?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              minimumSize: const Size(96, 40),
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirm == true && mounted) {
+      for (final id in _selectedIds.toList()) {
+        await widget.galleryService.deleteItem(id);
+      }
+      setState(() {
+        _selectedIds.clear();
+        _selectMode = false;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Deleted $count image${count == 1 ? '' : 's'}')),
+        );
+      }
+    }
+  }
+
+  Future<void> _batchMoveToHidden() async {
+    if (_selectedIds.isEmpty) return;
+    final count = _selectedIds.length;
+    for (final id in _selectedIds.toList()) {
+      await widget.galleryService.moveToHidden(id);
+    }
+    setState(() {
+      _selectedIds.clear();
+      _selectMode = false;
+    });
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Moved $count image${count == 1 ? '' : 's'} to hidden library')),
+      );
+    }
+  }
+
   Future<void> _deleteItem(GalleryItem item) async {
     final confirm = await showDialog<bool>(
       context: context,
@@ -83,136 +194,282 @@ class _GalleryScreenState extends State<GalleryScreen> {
     return ListenableBuilder(
       listenable: widget.galleryService,
       builder: (context, _) {
-        final items = widget.galleryService.items;
+        final allItems = widget.galleryService.items;
+        final filtered = _filteredItems;
+        final totalCount = allItems.length;
         return Scaffold(
           appBar: AppBar(
             title: Text(
-              items.isNotEmpty ? 'Gallery (${items.length})' : 'Gallery',
+              _selectMode
+                  ? '${_selectedIds.length} selected'
+                  : filtered.length < totalCount
+                      ? 'Gallery ($filtered of $totalCount)'
+                      : totalCount > 0
+                          ? 'Gallery ($totalCount)'
+                          : 'Gallery',
             ),
+            leading: _selectMode
+                ? IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: _toggleSelectMode,
+                    tooltip: 'Exit selection',
+                  )
+                : null,
             actions: [
-              IconButton(
-                icon: const Icon(Icons.lock_outline),
-                tooltip: 'Hidden library',
-                onPressed: () {
-                  final appState = context.read<AppState>();
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => ChangeNotifierProvider<AppState>.value(
-                        value: appState,
-                        child: const HiddenGalleryScreen(),
-                      ),
-                    ),
-                  );
-                },
-              ),
-              if (items.isNotEmpty)
+              if (_selectMode) ...[
                 IconButton(
-                  icon: const Icon(Icons.delete_sweep),
-                  tooltip: 'Clear all',
-                  onPressed: () async {
-                    final confirm = await showDialog<bool>(
-                      context: context,
-                      builder: (ctx) => AlertDialog(
-                        title: const Text('Clear Gallery'),
-                        content: SizedBox(
-                          width: 320,
-                          child: Text(
-                            'Delete all ${items.length} generated images?',
-                          ),
+                  icon: const Icon(Icons.delete_outline),
+                  tooltip: 'Delete selected',
+                  onPressed: _selectedIds.isNotEmpty ? _batchDelete : null,
+                ),
+                IconButton(
+                  icon: const Icon(Icons.lock_outline),
+                  tooltip: 'Move to hidden library',
+                  onPressed: _selectedIds.isNotEmpty ? _batchMoveToHidden : null,
+                ),
+              ] else ...[
+                IconButton(
+                  icon: const Icon(Icons.filter_list),
+                  tooltip: 'Toggle filters',
+                  onPressed: () => setState(() => _showFilters = !_showFilters),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.lock_outline),
+                  tooltip: 'Hidden library',
+                  onPressed: () {
+                    final appState = context.read<AppState>();
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => ChangeNotifierProvider<AppState>.value(
+                          value: appState,
+                          child: const HiddenGalleryScreen(),
                         ),
-                        actions: [
-                          TextButton(
-                            onPressed: () => Navigator.pop(ctx, false),
-                            child: const Text('Cancel'),
-                          ),
-                          FilledButton(
-                            style: FilledButton.styleFrom(
-                              minimumSize: const Size(96, 40),
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 16,
-                              ),
-                            ),
-                            onPressed: () => Navigator.pop(ctx, true),
-                            child: const Text('Clear All'),
-                          ),
-                        ],
                       ),
                     );
-                    if (confirm == true) {
-                      await widget.galleryService.deleteAll();
-                    }
                   },
                 ),
-            ],
-          ),
-          body: items.isEmpty
-              ? Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        Icons.photo_library_outlined,
-                        size: 64,
-                        color: Theme.of(
-                          context,
-                        ).colorScheme.onSurfaceVariant.withValues(alpha: 0.4),
-                      ),
-                      const SizedBox(height: 16),
-                      Text(
-                        'No generated images yet',
-                        style: Theme.of(context).textTheme.titleMedium
-                            ?.copyWith(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant
-                                  .withValues(alpha: 0.7),
+                if (allItems.isNotEmpty)
+                  IconButton(
+                    icon: const Icon(Icons.delete_sweep),
+                    tooltip: 'Clear all',
+                    onPressed: () async {
+                      final confirm = await showDialog<bool>(
+                        context: context,
+                        builder: (ctx) => AlertDialog(
+                          title: const Text('Clear Gallery'),
+                          content: SizedBox(
+                            width: 320,
+                            child: Text(
+                              'Delete all $totalCount generated images?',
                             ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Images you generate will appear here',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(
-                            context,
-                          ).colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(ctx, false),
+                              child: const Text('Cancel'),
+                            ),
+                            FilledButton(
+                              style: FilledButton.styleFrom(
+                                minimumSize: const Size(96, 40),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 16,
+                                ),
+                              ),
+                              onPressed: () => Navigator.pop(ctx, true),
+                              child: const Text('Clear All'),
+                            ),
+                          ],
                         ),
-                      ),
-                    ],
-                  ),
-                )
-              : RefreshIndicator(
-                  onRefresh: () async {
-                    setState(() {});
-                  },
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      final crossAxisCount = (constraints.maxWidth ~/ 160)
-                          .clamp(2, 5);
-                      return GridView.builder(
-                        padding: const EdgeInsets.all(12),
-                        physics: const AlwaysScrollableScrollPhysics(),
-                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: crossAxisCount,
-                          crossAxisSpacing: 8,
-                          mainAxisSpacing: 8,
-                        ),
-                        itemCount: items.length,
-                        itemBuilder: (context, index) {
-                          final item = items[index];
-                          return _GalleryThumbnail(
-                            key: ValueKey(item.id),
-                            item: item,
-                            galleryService: widget.galleryService,
-                            onTap: () => _viewImage(item),
-                            onDelete: () => _deleteItem(item),
-                          );
-                        },
                       );
+                      if (confirm == true) {
+                        await widget.galleryService.deleteAll();
+                      }
                     },
                   ),
+              ],
+            ],
+          ),
+          body: allItems.isEmpty
+              ? _buildEmptyState()
+              : Column(
+                  children: [
+                    if (_showFilters) _buildFilterBar(context),
+                    Expanded(
+                      child: filtered.isEmpty
+                          ? _buildNoMatchState()
+                          : RefreshIndicator(
+                              onRefresh: () async => setState(() {}),
+                              child: LayoutBuilder(
+                                builder: (context, constraints) {
+                                  final crossAxisCount =
+                                      (constraints.maxWidth ~/ 160).clamp(2, 5);
+                                  return GridView.builder(
+                                    padding: const EdgeInsets.all(12),
+                                    physics: const AlwaysScrollableScrollPhysics(),
+                                    gridDelegate:
+                                        SliverGridDelegateWithFixedCrossAxisCount(
+                                      crossAxisCount: crossAxisCount,
+                                      crossAxisSpacing: 8,
+                                      mainAxisSpacing: 8,
+                                    ),
+                                    itemCount: filtered.length,
+                                    itemBuilder: (context, index) {
+                                      final item = filtered[index];
+                                      final isSelected =
+                                          _selectedIds.contains(item.id);
+                                      return _GalleryThumbnail(
+                                        key: ValueKey(item.id),
+                                        item: item,
+                                        galleryService: widget.galleryService,
+                                        selectMode: _selectMode,
+                                        isSelected: isSelected,
+                                        onTap: _selectMode
+                                            ? () => _toggleItem(item.id)
+                                            : () => _viewImage(item),
+                                        onLongPress: _selectMode
+                                            ? null
+                                            : () => _enterSelectMode(item.id),
+                                      );
+                                    },
+                                  );
+                                },
+                              ),
+                            ),
+                    ),
+                  ],
                 ),
         );
       },
+    );
+  }
+
+  Widget _buildEmptyState() {
+    final theme = Theme.of(context);
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.photo_library_outlined,
+            size: 64,
+            color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.4),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'No generated images yet',
+            style: theme.textTheme.titleMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.7),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Images you generate will appear here',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNoMatchState() {
+    final theme = Theme.of(context);
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.search_off, size: 48,
+              color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.4)),
+          const SizedBox(height: 12),
+          Text('No images match your filters',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant)),
+          const SizedBox(height: 16),
+          TextButton.icon(
+            onPressed: () => setState(() {
+              _searchQuery = '';
+              _filterProfile = null;
+            }),
+            icon: const Icon(Icons.clear, size: 18),
+            label: const Text('Clear filters'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFilterBar(BuildContext context) {
+    final theme = Theme.of(context);
+    final profiles = _availableProfiles;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerLow,
+        border: Border(bottom: BorderSide(
+          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.3),
+        )),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            decoration: InputDecoration(
+              hintText: 'Search by prompt or model...',
+              prefixIcon: const Icon(Icons.search, size: 20),
+              isDense: true,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              suffixIcon: _searchQuery.isNotEmpty
+                  ? IconButton(
+                      icon: const Icon(Icons.clear, size: 18),
+                      onPressed: () => setState(() => _searchQuery = ''),
+                    )
+                  : null,
+            ),
+            onChanged: (v) => setState(() => _searchQuery = v),
+          ),
+          const SizedBox(height: 8),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                FilterChip(
+                  label: const Text('All'),
+                  selected: _filterProfile == null,
+                  onSelected: (_) => setState(() => _filterProfile = null),
+                  visualDensity: VisualDensity.compact,
+                ),
+                const SizedBox(width: 6),
+                ...profiles.map((p) {
+                  final arch = ArchitectureProfile.byId(p);
+                  return Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: FilterChip(
+                      label: Text(arch.name),
+                      selected: _filterProfile == p,
+                      onSelected: (_) => setState(() {
+                        _filterProfile = _filterProfile == p ? null : p;
+                      }),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  );
+                }),
+                const SizedBox(width: 6),
+                IconButton(
+                  icon: Icon(
+                    _sortNewestFirst ? Icons.arrow_upward : Icons.arrow_downward,
+                    size: 18,
+                  ),
+                  tooltip: _sortNewestFirst ? 'Newest first' : 'Oldest first',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () => setState(() => _sortNewestFirst = !_sortNewestFirst),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 4),
+        ],
+      ),
     );
   }
 }
@@ -221,14 +478,18 @@ class _GalleryThumbnail extends StatefulWidget {
   final GalleryItem item;
   final GalleryService galleryService;
   final VoidCallback onTap;
-  final VoidCallback onDelete;
+  final VoidCallback? onLongPress;
+  final bool selectMode;
+  final bool isSelected;
 
   const _GalleryThumbnail({
     super.key,
     required this.item,
     required this.galleryService,
     required this.onTap,
-    required this.onDelete,
+    this.onLongPress,
+    this.selectMode = false,
+    this.isSelected = false,
   });
 
   @override
@@ -263,45 +524,85 @@ class _GalleryThumbnailState extends State<_GalleryThumbnail> {
     final prompt = widget.item.params.positivePrompt;
     return Semantics(
       label: 'Image${prompt.isNotEmpty ? ": $prompt" : ""}',
-      hint: 'Double tap to view, long press to delete',
+      hint: widget.selectMode
+          ? 'Tap to select'
+          : 'Double tap to view, long press to select',
       child: GestureDetector(
         onTap: _failed ? null : widget.onTap,
-        onLongPress: _failed ? null : widget.onDelete,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(12),
-          child: _bytes != null
-              ? Image.memory(
-                  _bytes!,
-                  fit: BoxFit.cover,
-                  errorBuilder: (context, error, stackTrace) {
-                    return Container(
+        onLongPress: (_failed || widget.selectMode) ? null : widget.onLongPress,
+        child: Stack(
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: _bytes != null
+                  ? Image.memory(
+                      _bytes!,
+                      fit: BoxFit.cover,
+                      errorBuilder: (context, error, stackTrace) {
+                        return Container(
+                          color: theme.colorScheme.surfaceContainerLow,
+                          child: const Center(
+                            child: Icon(
+                              Icons.broken_image,
+                              size: 28,
+                            ),
+                          ),
+                        );
+                      },
+                    )
+                  : Container(
                       color: theme.colorScheme.surfaceContainerLow,
                       child: Center(
-                        child: Icon(
-                          Icons.broken_image,
-                          size: 28,
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
+                        child: _failed
+                            ? const Icon(
+                                Icons.broken_image,
+                                size: 28,
+                              )
+                            : const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              ),
                       ),
-                    );
-                  },
-                )
-              : Container(
-                  color: theme.colorScheme.surfaceContainerLow,
-                  child: Center(
-                    child: _failed
-                        ? Icon(
-                            Icons.broken_image,
-                            size: 28,
-                            color: theme.colorScheme.onSurfaceVariant,
-                          )
-                        : const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          ),
+                    ),
+            ),
+            if (widget.selectMode || widget.isSelected)
+              Positioned(
+                top: 4,
+                right: 4,
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: widget.isSelected
+                        ? theme.colorScheme.primary
+                        : theme.colorScheme.surface.withValues(alpha: 0.7),
+                    shape: BoxShape.circle,
+                  ),
+                  padding: const EdgeInsets.all(2),
+                  child: Icon(
+                    widget.isSelected
+                        ? Icons.check_circle
+                        : Icons.radio_button_unchecked,
+                    size: 22,
+                    color: widget.isSelected
+                        ? theme.colorScheme.onPrimary
+                        : theme.colorScheme.onSurfaceVariant,
                   ),
                 ),
+              ),
+            if (widget.isSelected)
+              Positioned.fill(
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.primary.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: theme.colorScheme.primary,
+                      width: 2,
+                    ),
+                  ),
+                ),
+              ),
+          ],
         ),
       ),
     );
@@ -331,7 +632,6 @@ class _ImageViewerState extends State<_ImageViewer> {
   late final PageController _pageController;
   late int _currentIndex;
   final Map<String, Uint8List?> _bytesCache = {};
-  final Map<String, Map<String, String>> _metaCache = {};
 
   @override
   void initState() {
@@ -358,45 +658,7 @@ class _ImageViewerState extends State<_ImageViewer> {
     if (!mounted) return;
     setState(() {
       _bytesCache[item.id] = bytes;
-      if (bytes != null) {
-        _metaCache[item.id] =
-            widget.galleryService.readImageMetadataFromBytes(bytes);
-      }
     });
-  }
-
-  bool get _hasEmbeddedConfig {
-    final meta = _metaCache[_currentItem.id];
-    if (meta == null) return false;
-    return meta.containsKey('comfy_mobile') || meta.containsKey('prompt');
-  }
-
-  Future<void> _loadEmbeddedConfig() async {
-    final meta = _metaCache[_currentItem.id];
-    final mobileJson = meta?['comfy_mobile'];
-    if (mobileJson == null) return;
-    try {
-      final data = jsonDecode(mobileJson) as Map<String, dynamic>;
-      final params = GenerationParams.fromJson(
-          data['params'] as Map<String, dynamic>? ?? {});
-      final serverUrl = data['serverUrl'] as String? ?? '';
-      if (mounted) {
-        widget.appState.updateParams(params);
-        if (serverUrl.isNotEmpty) {
-          widget.appState.comfyService.updateBaseUrl(serverUrl);
-        }
-        Navigator.of(context).pop();
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Config loaded from image')),
-        );
-      }
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Failed to read config from image')),
-        );
-      }
-    }
   }
 
   Future<void> _saveToShared() async {
@@ -424,12 +686,15 @@ class _ImageViewerState extends State<_ImageViewer> {
         backgroundColor: Colors.black87,
         foregroundColor: Colors.white,
         actions: [
-          if (_hasEmbeddedConfig)
-            IconButton(
-              icon: const Icon(Icons.settings_backup_restore),
-              tooltip: 'Load config from image',
-              onPressed: _loadEmbeddedConfig,
-            ),
+          IconButton(
+            icon: const Icon(Icons.send),
+            tooltip: 'Send to Generate',
+            onPressed: () {
+              widget.appState.updateParams(_currentItem.params);
+              widget.appState.requestTab(0);
+              Navigator.of(context).popUntil((route) => route.isFirst);
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.save_alt),
             tooltip: 'Save to shared location',

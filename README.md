@@ -8,9 +8,9 @@ A Flutter-based mobile/desktop frontend for [ComfyUI](https://github.com/comfyan
 
 | Tab | Description |
 |-----|-------------|
-| **Generate** | Prompt input, model/LoRA selection, parameter tuning, preset switcher, image generation |
+| **Generate** | Prompt input, model/LoRA selection, parameter tuning, preset switcher, image generation with progress and queue management |
 | **Workflows** | Import and manage custom ComfyUI API-format workflows |
-| **Gallery** | Browse generated images with full metadata, share, move to hidden library |
+| **Gallery** | Browse, search, filter, and sort generated images; multi-select for batch operations |
 | **Settings** | Backend mode, server config, config export/import as `.json`, presets, privacy controls |
 
 Focused inputs unfocus automatically when you change tabs (swipe or tap), so the keyboard never lingers across screens.
@@ -19,7 +19,7 @@ Focused inputs unfocus automatically when you change tabs (swipe or tap), so the
 
 Two backends, switchable from **Settings → Backend**:
 
-- **Local** — talks to a self-hosted ComfyUI instance over HTTP + WebSocket. Full feature set (any architecture, custom workflows, LoRAs, live progress).
+- **Local** — talks to a self-hosted ComfyUI instance over HTTP. Full feature set (any architecture, custom workflows, LoRAs, queue management and interrupt support).
 - **TAMS Cloud** — TensorArt's hosted workflow API. Bearer-token auth, job-poll based, locked to the SDXL profile.
 
 ### Architecture Profiles
@@ -57,17 +57,26 @@ Each profile declares its own loader nodes, text encoder, latent source, and any
 
 ### Gallery
 
-- Images saved locally with full generation metadata
+- Images saved locally with full generation metadata (model, architecture, steps, CFG, sampler, seed, prompt)
+- **Search, filter, and sort**: find images by prompt text, model, or architecture profile; sort newest or oldest first
+- **Multi-select mode**: long-press to enter selection mode, then batch delete or batch move to hidden library
+- **Send to Generate**: tap an image and load its full generation params back into the Generate tab
 - **PNG metadata embedded**: workflow JSON is written into the saved PNG and can be re-read later
-- Grid view with tap-to-expand fullscreen, share, delete, and "move to hidden library"
-- **Swipe** left/right in the fullscreen viewer to step through neighboring images
-- Metadata chips: model, architecture, steps, CFG, sampler, seed, prompt preview
+- Grid view with tap-to-expand fullscreen, swipe to step through neighboring images, share to OS
+
+### Generation
+
+- **Queue progress**: during generation the app polls ComfyUI's queue and shows running prompt count and remaining queue length
+- **Queue management**: view running and queued prompts, interrupt the current generation from the Generate tab
+- **Batch results**: when batch size > 1, all generated images are displayed in a grid and saved to the gallery
+- **Recycle seed**: after generation, the last used seed is remembered — one tap to reuse it or hit shuffle for a random seed on next generate
+- **Server interrupt**: the cancel button sends `POST /interrupt` to ComfyUI, not just stops local polling
 
 ### Privacy
 
 - **Hidden Library**: password-protected secondary gallery (PBKDF2-style salted hash, no plaintext storage)
 - **Secure Window** (Android): enables `FLAG_SECURE` — blurs the app preview in the recents switcher and blocks screenshots
-- **Background generation** (Android): a foreground service keeps the WebSocket alive while the app is backgrounded
+- **Background generation** (Android): a foreground service keeps the HTTP polling alive while the app is backgrounded
 
 ### Theming
 
@@ -138,14 +147,14 @@ lib/
 │   ├── saved_workflow.dart              # Persisted user-imported workflow
 │   └── workflow.dart                    # AppConfig (export/import payload)
 ├── screens/
-│   ├── home_screen.dart                 # 4-tab shell + AppState (ChangeNotifier)
-│   ├── generate_screen.dart             # Prompt, generation, preset switcher, foreground-service hookup
+│   ├── home_screen.dart                 # 4-tab shell + AppState (ChangeNotifier), tab navigation
+│   ├── generate_screen.dart             # Prompt, generation, progress tracking, queue management, foreground-service hookup
 │   ├── workflows_screen.dart            # Custom workflow list, file picker, validation
-│   ├── gallery_screen.dart              # Grid, fullscreen viewer, share, hidden-library moves
+│   ├── gallery_screen.dart              # Grid with search/filter/sort, multi-select, fullscreen viewer, share
 │   ├── hidden_gallery_screen.dart       # Password-gated secondary gallery
 │   └── settings_screen.dart             # Server, config, presets, privacy, about
 ├── services/
-│   ├── comfyui_service.dart             # HTTP + WebSocket client, /object_info registry
+│   ├── comfyui_service.dart             # HTTP client, /object_info registry, queue/interrupt support
 │   ├── tams_service.dart                # TensorArt cloud client (bearer auth, job polling)
 │   ├── config_service.dart              # SharedPreferences, presets, hidden-library password hash
 │   ├── gallery_service.dart             # Local file storage, main + hidden indices, share to OS
@@ -166,7 +175,8 @@ lib/
 |---------|---------|
 | `flutter/material.dart` | UI framework (Material 3) |
 | `provider` | State management (ChangeNotifierProvider) |
-| `http` | ComfyUI REST + WebSocket client |
+| `http` | ComfyUI REST client |
+| `cupertino_icons` | iOS-style icons |
 | `shared_preferences` | Config and preset persistence |
 | `path_provider` | App documents directory for gallery storage |
 | `file_picker` | Workflow / config `.json` import & export |
@@ -183,7 +193,7 @@ For imported workflows, `DynamicWorkflow.parse` scans the user-supplied API JSON
 
 ## Notes
 
-- The app queries ComfyUI's `/object_info` to discover models, samplers, schedulers, and node input schemas — restart with the server reachable for new model files to appear
+- The app polls ComfyUI's `/history` and `/queue` endpoints for generation results and progress — no WebSocket dependency
 - Anima-style split loaders auto-derive sibling CLIP/VAE filenames (`<base>_clip.safetensors`, `<base>_vae.safetensors`) when fields are blank
 - Generated PNGs include the workflow JSON in a tEXt chunk — drag a generated image back into the ComfyUI editor to recover the workflow
 - Presets and saved workflows are stored as JSON in `SharedPreferences` and travel with config exports

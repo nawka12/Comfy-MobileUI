@@ -15,6 +15,7 @@ class ParameterPanel extends StatefulWidget {
   final VoidCallback? onPickClip;
   final VoidCallback? onPickVae;
   final bool isTams;
+  final int? lastSeed;
 
   const ParameterPanel({
     super.key,
@@ -29,6 +30,7 @@ class ParameterPanel extends StatefulWidget {
     this.onPickClip,
     this.onPickVae,
     this.isTams = false,
+    this.lastSeed,
   });
 
   @override
@@ -380,19 +382,39 @@ class _ParameterPanelState extends State<ParameterPanel>
                 hintText: 'Auto',
               ),
               onChanged: (v) {
-                final parsed = int.tryParse(v);
-                if (parsed != null) {
-                  _lastSeed = parsed;
-                  _update((s) => s.seed = parsed);
+                if (v.isEmpty) {
+                  _update((s) => s.seed = -1);
+                } else {
+                  final parsed = int.tryParse(v);
+                  if (parsed != null) {
+                    _lastSeed = parsed;
+                    _update((s) => s.seed = parsed);
+                  }
                 }
               },
             ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 4),
+          if (widget.lastSeed != null)
+            IconButton(
+              onPressed: () {
+                _seedCtrl.text = widget.lastSeed.toString();
+                _lastSeed = widget.lastSeed!;
+                _update((s) => s.seed = widget.lastSeed!);
+              },
+              icon: const Icon(Icons.replay, size: 18),
+              tooltip: 'Reuse last seed (${widget.lastSeed})',
+              style: IconButton.styleFrom(
+                minimumSize: const Size(36, 36),
+              ),
+            ),
           IconButton.filled(
-            onPressed: () => _update((s) => s.randomizeSeed()),
+            onPressed: () {
+              _seedCtrl.text = '-1';
+              _update((s) => s.seed = -1);
+            },
             icon: const Icon(Icons.shuffle, size: 18),
-            tooltip: 'Randomize seed',
+            tooltip: 'Random seed on next generate',
             style: IconButton.styleFrom(
               minimumSize: const Size(40, 40),
             ),

@@ -86,6 +86,16 @@ class ComfyUIService {
     throw ComfyUIException('Failed to get queue: ${resp.statusCode}');
   }
 
+  Future<void> interrupt() async {
+    final resp = await _client.post(
+      Uri.parse('$_baseUrl/interrupt'),
+      headers: {'Content-Type': 'application/json'},
+    );
+    if (resp.statusCode != 200) {
+      throw ComfyUIException('Failed to interrupt: ${resp.statusCode}');
+    }
+  }
+
   /// Discover available models for a given loader type
   List<String> getModels(String loaderType) {
     final node = registry[loaderType];

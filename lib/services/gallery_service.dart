@@ -11,9 +11,11 @@ import 'png_metadata.dart';
 class GalleryService extends ChangeNotifier {
   static const _galleryIndexKey = 'gallery_index';
   static const _hiddenIndexKey = 'hidden_gallery_index';
+  static const int _maxCacheEntries = 200;
   List<GalleryItem> _items = [];
   List<GalleryItem> _hiddenItems = [];
   String? _galleryDir;
+  final Map<String, Uint8List> _thumbCache = {};
 
   List<GalleryItem> get items => List.unmodifiable(_items);
   List<GalleryItem> get hiddenItems => List.unmodifiable(_hiddenItems);
@@ -122,6 +124,7 @@ class GalleryService extends ChangeNotifier {
     final idx = _items.indexWhere((e) => e.id == id);
     if (idx == -1) return;
     final item = _items.removeAt(idx);
+    _thumbCache.remove(item.filePath);
     final file = File(item.filePath);
     if (await file.exists()) {
       await file.delete();
@@ -132,6 +135,7 @@ class GalleryService extends ChangeNotifier {
 
   Future<void> deleteAll() async {
     for (final item in _items) {
+      _thumbCache.remove(item.filePath);
       final file = File(item.filePath);
       if (await file.exists()) {
         await file.delete();
@@ -146,6 +150,7 @@ class GalleryService extends ChangeNotifier {
     final idx = _items.indexWhere((e) => e.id == id);
     if (idx == -1) return;
     final item = _items.removeAt(idx);
+    _thumbCache.remove(item.filePath);
     _hiddenItems.insert(0, item);
     await _saveIndex();
     await _saveHiddenIndex();
@@ -187,13 +192,27 @@ class GalleryService extends ChangeNotifier {
   }
 
   Future<Uint8List?> loadImageBytes(String filePath) async {
+    final cached = _thumbCache[filePath];
+    if (cached != null) return cached;
     try {
       final file = File(filePath);
       if (await file.exists()) {
-        return await file.readAsBytes();
+        final bytes = await file.readAsBytes();
+        if (_thumbCache.length < _maxCacheEntries) {
+          _thumbCache[filePath] = bytes;
+        }
+        return bytes;
       }
     } catch (_) {}
     return null;
+  }
+
+  void invalidateCache(String filePath) {
+    _thumbCache.remove(filePath);
+  }
+
+  void clearCache() {
+    _thumbCache.clear();
   }
 
   /// Save a gallery image to a public/shared directory so it appears

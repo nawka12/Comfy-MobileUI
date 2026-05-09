@@ -300,7 +300,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   const SizedBox(height: 8),
                   const ListTile(
                     title: Text('Comfy Mobile UI'),
-                    subtitle: Text('Version 2.0.0'),
+                    subtitle: Text('Version 1.0.0'),
                   ),
                   ListTile(
                     title: const Text('Supported Architectures'),
@@ -921,7 +921,10 @@ class _PresetsCardState extends State<_PresetsCard> {
                           onPressed: () => _loadPreset(preset),
                           style: IconButton.styleFrom(minimumSize: const Size(36, 36)),
                         ),
-                        PopupMenuButton<String>(
+                        Semantics(
+                          label: 'Preset actions',
+                          button: true,
+                          child: PopupMenuButton<String>(
                           icon: const Icon(Icons.more_vert, size: 18),
                           onSelected: (v) {
                             switch (v) {
@@ -935,6 +938,7 @@ class _PresetsCardState extends State<_PresetsCard> {
                             const PopupMenuItem(value: 'export', child: Text('Export')),
                             const PopupMenuItem(value: 'delete', child: Text('Delete')),
                           ],
+                        ),
                         ),
                       ],
                     ),

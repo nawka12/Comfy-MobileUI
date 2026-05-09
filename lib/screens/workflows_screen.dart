@@ -217,7 +217,10 @@ class _WorkflowCard extends StatelessWidget {
                 : theme.colorScheme.onSurfaceVariant,
           ),
         ),
-        trailing: PopupMenuButton<String>(
+        trailing: Semantics(
+          label: 'Workflow actions',
+          button: true,
+          child: PopupMenuButton<String>(
           icon: const Icon(Icons.more_vert),
           onSelected: (v) {
             switch (v) {
@@ -231,6 +234,7 @@ class _WorkflowCard extends StatelessWidget {
             PopupMenuItem(value: 'rename', child: Text('Rename')),
             PopupMenuItem(value: 'delete', child: Text('Delete')),
           ],
+        ),
         ),
       ),
     );

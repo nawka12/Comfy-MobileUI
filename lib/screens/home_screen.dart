@@ -45,6 +45,22 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
+  void _onTabChanged(AppState state) {
+    final requested = state.requestedTab;
+    if (requested != null && requested != _currentIndex) {
+      state.consumeRequestedTab();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _pageCtrl.animateToPage(
+          requested,
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeInOut,
+        );
+        setState(() => _currentIndex = requested);
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return ChangeNotifierProvider(
@@ -52,6 +68,7 @@ class _HomeScreenState extends State<HomeScreen> {
       child: _AppStateInitializer(
         child: Consumer<AppState>(
           builder: (context, state, _) {
+            _onTabChanged(state);
             final screens = [
               GenerateScreen(service: widget.service, tamsService: widget.tamsService),
               const WorkflowsScreen(),
@@ -194,6 +211,18 @@ class AppState extends ChangeNotifier {
   String? activeWorkflowId;
   DynamicWorkflow? _activeWorkflow;
   bool customMode = false;
+  int? _requestedTab;
+
+  int? get requestedTab => _requestedTab;
+
+  void requestTab(int index) {
+    _requestedTab = index;
+    notifyListeners();
+  }
+
+  void consumeRequestedTab() {
+    _requestedTab = null;
+  }
 
   AppState(this.comfyService, this.tamsService)
       : configService = ConfigService(),

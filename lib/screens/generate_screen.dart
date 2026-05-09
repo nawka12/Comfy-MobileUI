@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
 import '../models/architecture_profile.dart';
@@ -35,8 +35,12 @@ class _GenerateScreenState extends State<GenerateScreen>
 
   bool _generating = false;
   bool _cancelRequested = false;
-  Uint8List? _currentImage;
+  List<Uint8List> _currentImages = [];
   CancelToken? _cancelToken;
+  Timer? _queuePollTimer;
+  int _queueRunning = 0;
+  int _queueRemaining = 0;
+  int? _lastUsedSeed;
 
   @override
   void initState() {
@@ -67,6 +71,13 @@ class _GenerateScreenState extends State<GenerateScreen>
 
   AppState get _state => context.read<AppState>();
 
+  String _progressText() {
+    final parts = <String>['Generating'];
+    if (_queueRunning > 0) parts.add('· step $_queueRunning');
+    if (_queueRemaining > 0) parts.add('· $_queueRemaining queued');
+    return '${parts.join(' ')}...';
+  }
+
   Future<void> _generate() async {
     if (_generating) return;
     final state = _state;
@@ -85,13 +96,19 @@ class _GenerateScreenState extends State<GenerateScreen>
       _syncPromptCtrls();
     }
 
+    if (state.params.seed == -1) {
+      state.params.randomizeSeed();
+    }
+    _lastUsedSeed = state.params.seed;
+
     setState(() {
       _generating = true;
       _cancelRequested = false;
-      _currentImage = null;
+      _currentImages = [];
     });
 
     _cancelToken = CancelToken();
+    _startQueuePolling();
 
     try {
       final Map<String, dynamic> workflow;
@@ -111,13 +128,14 @@ class _GenerateScreenState extends State<GenerateScreen>
         return;
       }
 
-      final Uint8List imageData;
+      final List<Uint8List> imageList;
       if (isTams) {
         final tamsBody = state.workflowBuilder.toTamsFormat(workflow);
-        imageData = await _tamsGenerate(tamsBody, _cancelToken!);
+        final single = await _tamsGenerate(tamsBody, _cancelToken!);
+        imageList = [single];
       } else {
         final promptId = await widget.service.queuePrompt(workflow);
-        imageData = await _pollForResult(promptId, _cancelToken!);
+        imageList = await _pollForResult(promptId, _cancelToken!);
       }
 
       if (!mounted || _cancelRequested) {
@@ -126,7 +144,7 @@ class _GenerateScreenState extends State<GenerateScreen>
         return;
       }
       setState(() {
-        _currentImage = imageData;
+        _currentImages = imageList;
         _generating = false;
       });
 
@@ -138,28 +156,36 @@ class _GenerateScreenState extends State<GenerateScreen>
         'params': state.params.toJson(),
         'serverUrl': state.currentBackendUrl,
       });
-      await state.galleryService.addImage(
-        imageData, state.params.copy(),
-        workflowJson: workflowJson,
-        comfyConfig: mobileConfig,
-      );
+      for (final imageData in imageList) {
+        await state.galleryService.addImage(
+          imageData, state.params.copy(),
+          workflowJson: workflowJson,
+          comfyConfig: mobileConfig,
+        );
+      }
+      HapticFeedback.mediumImpact();
     } on ComfyUIException catch (e) {
       if (!mounted) return;
       setState(() => _generating = false);
+      HapticFeedback.heavyImpact();
       _showSnack(e.message);
     } on TamsCreditsException catch (e) {
       if (!mounted) return;
       setState(() => _generating = false);
+      HapticFeedback.heavyImpact();
       _showCreditsError(e.message);
     } on TamsException catch (e) {
       if (!mounted) return;
       setState(() => _generating = false);
+      HapticFeedback.heavyImpact();
       _showSnack('TAMS error: ${e.message}');
     } catch (e) {
       if (!mounted) return;
       setState(() => _generating = false);
+      HapticFeedback.heavyImpact();
       _showSnack('Generation failed: $e');
     } finally {
+      _stopQueuePolling();
       await AndroidForegroundService.stop();
     }
   }
@@ -199,11 +225,97 @@ class _GenerateScreenState extends State<GenerateScreen>
   void _cancelGeneration() {
     _cancelRequested = true;
     _cancelToken?.cancel();
+    _stopQueuePolling();
+    if (_state.backendMode == BackendMode.local) {
+      widget.service.interrupt().catchError((_) {});
+    }
     setState(() => _generating = false);
     AndroidForegroundService.stop();
   }
 
-  Future<Uint8List> _pollForResult(String promptId, CancelToken cancelToken) async {
+  void _startQueuePolling() {
+    _queuePollTimer?.cancel();
+    _queuePollTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
+      if (!mounted) return;
+      try {
+        if (_state.backendMode == BackendMode.tams) return;
+        final queue = await widget.service.getQueue();
+        if (!mounted) return;
+        final running = (queue['queue_running'] as List<dynamic>?)?.length ?? 0;
+        final remaining = (queue['queue_remaining'] as List<dynamic>?)?.length ?? 0;
+        setState(() {
+          _queueRunning = running;
+          _queueRemaining = remaining;
+        });
+      } catch (_) {}
+    });
+  }
+
+  void _stopQueuePolling() {
+    _queuePollTimer?.cancel();
+    _queuePollTimer = null;
+    _queueRunning = 0;
+    _queueRemaining = 0;
+  }
+
+  Future<void> _showQueueDialog() async {
+    Map<String, dynamic>? queueData;
+    try {
+      queueData = await widget.service.getQueue();
+    } catch (_) {}
+    if (!mounted) return;
+    final running = (queueData?['queue_running'] as List<dynamic>?) ?? [];
+    final remaining = (queueData?['queue_remaining'] as List<dynamic>?) ?? [];
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Generation Queue'),
+        content: SizedBox(
+          width: 360,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Running: ${running.length}', style: Theme.of(ctx).textTheme.bodyMedium),
+              if (running.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text('${running.length} prompt(s) in progress', style: Theme.of(ctx).textTheme.bodySmall),
+              ],
+              const SizedBox(height: 12),
+              Text('Queued: ${remaining.length}', style: Theme.of(ctx).textTheme.bodyMedium),
+              if (remaining.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text('${remaining.length} prompt(s) waiting', style: Theme.of(ctx).textTheme.bodySmall),
+              ],
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: () async {
+                      try {
+                        await widget.service.interrupt();
+                        if (ctx.mounted) Navigator.pop(ctx);
+                        if (mounted) _showSnack('Generation interrupted');
+                      } catch (e) {
+                        if (mounted) _showSnack('Failed to interrupt: $e');
+                      }
+                    },
+                    icon: const Icon(Icons.stop, size: 18),
+                    label: const Text('Interrupt'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
+        ],
+      ),
+    );
+  }
+
+  Future<List<Uint8List>> _pollForResult(String promptId, CancelToken cancelToken) async {
     const maxAttempts = 300;
     const delay = Duration(seconds: 1);
 
@@ -233,12 +345,17 @@ class _GenerateScreenState extends State<GenerateScreen>
           if (outputNode != null) {
             final images = outputNode['images'] as List<dynamic>?;
             if (images != null && images.isNotEmpty) {
-              final img = images.first as Map<String, dynamic>;
-              return widget.service.getImage(
-                img['filename'] as String,
-                subfolder: img['subfolder'] as String? ?? '',
-                type: img['type'] as String? ?? 'output',
-              );
+              final results = <Uint8List>[];
+              for (final img in images) {
+                final data = img as Map<String, dynamic>;
+                final bytes = await widget.service.getImage(
+                  data['filename'] as String,
+                  subfolder: data['subfolder'] as String? ?? '',
+                  type: data['type'] as String? ?? 'output',
+                );
+                results.add(bytes);
+              }
+              return results;
             }
           }
         }
@@ -326,6 +443,12 @@ class _GenerateScreenState extends State<GenerateScreen>
             title: const Text('Generate'),
             actions: [
               _connectionIndicator(state),
+              if (state.backendMode == BackendMode.local)
+                IconButton(
+                  icon: const Icon(Icons.list_alt),
+                  onPressed: _showQueueDialog,
+                  tooltip: 'Generation queue',
+                ),
               IconButton(
                 icon: const Icon(Icons.wifi_find),
                 onPressed: () => _showConnectionDialog(state),
@@ -421,20 +544,34 @@ class _GenerateScreenState extends State<GenerateScreen>
   }
 
   Widget _buildImageArea(AppState state) {
+    final theme = Theme.of(context);
     return Container(
       margin: const EdgeInsets.all(8),
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerLow,
+        color: theme.colorScheme.surfaceContainerLow,
         borderRadius: BorderRadius.circular(12),
       ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(12),
-        child: _currentImage != null
-            ? InteractiveViewer(
-                child: Center(
-                  child: Image.memory(_currentImage!, fit: BoxFit.contain),
-                ),
-              )
+        child: _currentImages.isNotEmpty
+            ? _currentImages.length == 1
+                ? InteractiveViewer(
+                    child: Center(
+                      child: Image.memory(_currentImages.first, fit: BoxFit.contain),
+                    ),
+                  )
+                : GridView.count(
+                    crossAxisCount: 2,
+                    padding: const EdgeInsets.all(4),
+                    mainAxisSpacing: 4,
+                    crossAxisSpacing: 4,
+                    children: _currentImages.map((bytes) {
+                      return ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: Image.memory(bytes, fit: BoxFit.cover),
+                      );
+                    }).toList(),
+                  )
             : Center(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -442,16 +579,13 @@ class _GenerateScreenState extends State<GenerateScreen>
                     Icon(
                       _generating ? Icons.hourglass_bottom : Icons.image_outlined,
                       size: 48,
-                      color: Theme.of(context).colorScheme.onSurfaceVariant.withValues(alpha: 0.4),
+                      color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.4),
                     ),
                     const SizedBox(height: 12),
                     Text(
-                      _generating ? 'Generating...' : 'Your image will appear here',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onSurfaceVariant
-                                .withValues(alpha: 0.6),
+                      _generating ? _progressText() : 'Your image will appear here',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.6),
                           ),
                     ),
                     if (_generating) ...[
@@ -530,6 +664,7 @@ class _GenerateScreenState extends State<GenerateScreen>
                   ? () => _showModelPicker(state, 'vae')
                   : null,
               isTams: state.backendMode == BackendMode.tams,
+              lastSeed: _lastUsedSeed,
             ),
             LoraPanel(
               params: state.params,
@@ -689,17 +824,21 @@ class _GenerateScreenState extends State<GenerateScreen>
           ),
           if (_generating) ...[
             const SizedBox(width: 12),
-            OutlinedButton(
-              onPressed: _cancelGeneration,
-              style: OutlinedButton.styleFrom(
-                foregroundColor: theme.colorScheme.error,
-                side: BorderSide(color: theme.colorScheme.error),
-                minimumSize: const Size(52, 52),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
+            Semantics(
+              label: 'Cancel generation',
+              button: true,
+              child: OutlinedButton(
+                onPressed: _cancelGeneration,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: theme.colorScheme.error,
+                  side: BorderSide(color: theme.colorScheme.error),
+                  minimumSize: const Size(52, 52),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
                 ),
+                child: const Icon(Icons.close),
               ),
-              child: const Icon(Icons.close),
             ),
           ],
         ],
